@@ -1,285 +1,378 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
-import streamlit as st
-import plotly.express as px
 import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
-# --- הגדרות תצוגת העמוד ועיצוב יוקרתי ---
-st.set_page_config(page_title="Quantum Institutional Backtest", layout="wide", initial_sidebar_state="expanded")
+# --- הגדרות כלליות ---
+TIMEZONE = "America/New_York"
+INTERVAL = "15m"          # yahoo מגביל נתוני 15 דק' ל-60 יום אחורה בלבד
 
-# קוד CSS מתקדם לעיצוב פרימיום
+INSTRUMENTS = {
+    "נאסדק 100 (Micro - MNQ)": {"ticker": "MNQ=F", "point_value": 2,   "color": "#60a5fa"},
+    "S&P 500 (Micro - MES)":    {"ticker": "MES=F", "point_value": 5,   "color": "#34d399"},
+    "זהב (Micro Gold - MGC)":   {"ticker": "MGC=F", "point_value": 10,  "color": "#d4af37"},
+    "נפט גולמי (Micro - MCL)":  {"ticker": "MCL=F", "point_value": 100, "color": "#f87171"},
+}
+
+LOOKBACK_OPTIONS = {
+    "7 ימים": 7, "14 ימים": 14, "30 ימים": 30, "45 ימים": 45, "60 ימים": 60
+}
+
+st.set_page_config(page_title="Quant Desk | בקטסט אסטרטגיות", layout="wide", page_icon="💎")
+
+# ---------------------------------------------------------------------------
+# עיצוב יוקרתי
+# ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700&display=swap');
-    
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap');
+
     html, body, [class*="css"] {
-        font-family: 'Heebo', sans-serif;
+        direction: rtl;
+        text-align: right;
+        font-family: 'Inter', sans-serif;
     }
-    
-    /* רקע המערכת - מעבר צבעים כהה ויוקרתי */
     .stApp {
-        background: linear-gradient(135deg, #0B0E14 0%, #1A1E29 100%);
-        color: #E2E8F0;
+        background: radial-gradient(circle at 20% 0%, #14131a 0%, #07070b 55%, #050506 100%);
     }
-    
-    /* עיצוב כותרות בזהב פלטינה */
-    h1, h2, h3 {
-        color: #D4AF37 !important;
-        text-shadow: 0px 2px 4px rgba(0,0,0,0.5);
+    #MainMenu, footer, header {visibility: hidden;}
+
+    .hero {
+        background: linear-gradient(135deg, rgba(212,175,55,0.10) 0%, rgba(15,15,20,0.9) 60%);
+        border: 1px solid rgba(212,175,55,0.35);
+        border-radius: 20px;
+        padding: 34px 40px;
+        margin-bottom: 28px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
+        position: relative;
+        overflow: hidden;
     }
-    
-    /* עיצוב סרגל הצד (Sidebar) באפקט זכוכית */
-    [data-testid="stSidebar"] {
-        background-color: rgba(11, 14, 20, 0.85);
-        border-right: 1px solid rgba(212, 175, 55, 0.2);
-        backdrop-filter: blur(10px);
+    .hero::before {
+        content: "";
+        position: absolute; top: -60%; right: -10%;
+        width: 300px; height: 300px;
+        background: radial-gradient(circle, rgba(212,175,55,0.25) 0%, transparent 70%);
     }
-    
-    /* כפתור הרצה יוקרתי */
+    .hero .kicker {
+        color: #d4af37;
+        letter-spacing: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+    }
+    .hero h1 {
+        margin: 0;
+        font-family: 'Playfair Display', serif;
+        font-size: 36px;
+        font-weight: 700;
+        color: #f5f2e9;
+        letter-spacing: 0.5px;
+    }
+    .hero p {
+        color: #9a978d;
+        margin-top: 10px;
+        font-size: 15px;
+    }
+
+    .panel {
+        background: linear-gradient(180deg, #121116 0%, #0c0b10 100%);
+        border: 1px solid rgba(212,175,55,0.18);
+        border-radius: 16px;
+        padding: 22px 24px;
+        margin-bottom: 22px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    }
+
+    div[data-testid="stMetric"] {
+        background: linear-gradient(180deg, #16151b 0%, #0e0d12 100%);
+        border: 1px solid rgba(212,175,55,0.25);
+        border-radius: 14px;
+        padding: 16px 18px;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+    }
+    div[data-testid="stMetricLabel"] { color: #a7a396; font-weight: 500; }
+    div[data-testid="stMetricValue"] { color: #f5f2e9; font-family: 'Playfair Display', serif; }
+
     .stButton>button {
-        background: linear-gradient(90deg, #D4AF37 0%, #F9E596 50%, #D4AF37 100%);
-        color: #000000 !important;
-        font-weight: 800;
-        font-size: 1.1rem;
+        background: linear-gradient(90deg, #d4af37, #b8860b);
+        color: #0a0a0c;
         border: none;
-        border-radius: 8px;
-        padding: 10px 0;
-        transition: all 0.4s ease;
-        box-shadow: 0 4px 15px rgba(212, 175, 55, 0.3);
-        width: 100%;
+        border-radius: 10px;
+        padding: 12px 30px;
+        font-weight: 700;
+        font-size: 15px;
+        letter-spacing: 0.5px;
+        box-shadow: 0 8px 20px rgba(212,175,55,0.25);
+        transition: all 0.2s ease;
     }
     .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(212, 175, 55, 0.6);
+        transform: translateY(-1px);
+        box-shadow: 0 10px 26px rgba(212,175,55,0.4);
+        color: #0a0a0c;
     }
-    
-    /* קוביות נתונים (Metrics) עם אפקט מודרני */
-    div[data-testid="metric-container"] {
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-right: 4px solid #D4AF37;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        backdrop-filter: blur(4px);
-        transition: transform 0.3s;
+
+    .section-title {
+        font-family: 'Playfair Display', serif;
+        font-size: 22px;
+        font-weight: 700;
+        margin: 26px 0 12px 0;
+        color: #f0ede4;
+        border-right: 3px solid #d4af37;
+        padding-right: 12px;
     }
-    div[data-testid="metric-container"]:hover {
-        transform: scale(1.02);
-        border-right-color: #F9E596;
+    .gold-caption { color: #a7a396; font-size: 13px; margin-bottom: 14px; }
+
+    .stDataFrame { border-radius: 12px; overflow: hidden; border: 1px solid rgba(212,175,55,0.15); }
+
+    div[data-baseweb="select"] > div {
+        background-color: #121116;
+        border-color: rgba(212,175,55,0.3);
     }
-    
-    /* קווים מפרידים */
-    hr {
-        border-color: rgba(212, 175, 55, 0.2) !important;
+
+    hr.gold-divider {
+        border: none; height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(212,175,55,0.5), transparent);
+        margin: 30px 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- מאגר נכסים ---
-ASSETS = {
-    "מיקרו נאסד''ק רציף (MNQ=F)": {"ticker": "MNQ=F", "point_value": 2},
-    "נאסד''ק רציף (NQ=F)": {"ticker": "NQ=F", "point_value": 20},
-    "S&P 500 מיקרו (MES=F)": {"ticker": "MES=F", "point_value": 5},
-    "זהב (GC=F)": {"ticker": "GC=F", "point_value": 100}
-}
 
-# --- מנוע הבקטסט הכולל מעקב שקיפות ---
-def run_strategy(ticker, point_value, period):
-    asset = yf.Ticker(ticker)
-    data = asset.history(period=period, interval="15m")
-        
-    if data.empty:
-        return pd.DataFrame(), pd.DataFrame()
+# ---------------------------------------------------------------------------
+# לוגיקת האסטרטגיה
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=900, show_spinner=False)
+def run_backtest(ticker: str, point_value: float, days_back: int):
+    """מריץ את אסטרטגיית פריצת נר הפתיחה על מכשיר נתון.
+    מחזיר: (df_trades, debug_log)"""
 
-    if data.index.tz is None:
-        data.index = data.index.tz_localize('UTC').tz_convert('America/New_York')
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days_back)
+
+    ticker_obj = yf.Ticker(ticker)
+    df = ticker_obj.history(start=start_date, end=end_date, interval=INTERVAL)
+
+    if df.empty:
+        return pd.DataFrame(), []
+
+    if df.index.tz is None:
+        df.index = df.index.tz_localize('UTC').tz_convert(TIMEZONE)
     else:
-        data.index = data.index.tz_convert('America/New_York')
+        df.index = df.index.tz_convert(TIMEZONE)
 
-    trades_results = []
-    daily_log = [] # יומן שקוף שעוקב אחרי כל יום מסחר
-    
-    grouped = data.groupby(data.index.date)
-    
-    for date, df_day in grouped:
-        date_str = date.strftime('%Y-%m-%d')
-        df_day = df_day.between_time('09:30', '16:00')
-        
-        # סינון ימים ללא מספיק נרות
-        if len(df_day) < 4:
-            daily_log.append({'תאריך': date_str, 'סטטוס': 'התעלמות', 'פירוט/סיבה': 'אין מספיק נרות שוק ביום זה (חג/סגירה מוקדמת)'})
+    trades = []
+    debug_log = []
+
+    df['Date'] = df.index.date
+    grouped = df.groupby('Date')
+
+    for date, day_data in grouped:
+        market_hours = day_data.between_time('09:30', '16:00')
+
+        if len(market_hours) < 4:
+            debug_log.append({'תאריך': date.strftime('%Y-%m-%d'), 'תוצאה': 'דולג',
+                               'סיבה': f'רק {len(market_hours)} נרות זמינים ביום זה (נדרשים 4+)'})
             continue
-            
-        c1 = df_day.iloc[0] # 09:30
-        c2 = df_day.iloc[1] # 09:45
-        c3 = df_day.iloc[2] # 10:00
-        c4 = df_day.iloc[3] # 10:15
-        
-        c1_open, c1_close, c1_high, c1_low = c1['Open'], c1['Close'], c1['High'], c1['Low']
-        c2_high, c2_low = c2['High'], c2['Low']
-        c3_high, c3_low = c3['High'], c3['Low']
-        c4_open, c4_high, c4_low = c4['Open'], c4['High'], c4['Low']
-        
+
+        c1, c2, c3, c4 = market_hours.iloc[0], market_hours.iloc[1], market_hours.iloc[2], market_hours.iloc[3]
+
         trade_type = None
-        entry_price, exit_price, stop_loss, pnl_points = 0.0, 0.0, 0.0, 0.0
+        entry_price = stop_loss = exit_price = 0
         reason = ""
-        
-        # --- בדיקת לונג ---
-        if c1_close > c1_open:
-            if c2_high > c1_high:
+
+        is_green_c1 = c1['Close'] > c1['Open']
+        is_red_c1 = c1['Close'] < c1['Open']
+
+        if is_green_c1:
+            if c2['High'] > c1['High']:
                 trade_type = 'Long'
-                reason = "כניסה ללונג (פריצת נר ראשון ירוק)"
-                entry_price = c1_high
-                stop_loss = c1_low
-                
-                if c2_low <= stop_loss:
+                entry_price, stop_loss = c1['High'], c1['Low']
+                if c2['Low'] <= stop_loss or c3['Low'] <= stop_loss:
                     exit_price = stop_loss
                 else:
-                    best_price = max(c3_high, c4_high)
-                    if best_price > entry_price:
-                        exit_price = best_price
-                    else:
-                        if c3_low <= stop_loss:
-                            exit_price = stop_loss
-                        else:
-                            exit_price = c4_open
-                pnl_points = exit_price - entry_price
+                    best_price = max(c3['High'], c4['High'])
+                    exit_price = best_price if best_price > entry_price else c4['Open']
             else:
-                daily_log.append({'תאריך': date_str, 'סטטוס': 'ללא עסקה', 'פירוט/סיבה': 'הנר הראשון היה ירוק, אך הנר השני לא הצליח לפרוץ את הגבוה שלו'})
-
-        # --- בדיקת שורט ---
-        elif c1_close < c1_open:
-            if c2_low < c1_low:
+                reason = 'נר 1 ירוק, אך נר 2 לא פרץ את השיא שלו — אין כניסה'
+        elif is_red_c1:
+            if c2['Low'] < c1['Low']:
                 trade_type = 'Short'
-                reason = "כניסה לשורט (שבירת נר ראשון אדום)"
-                entry_price = c1_low
-                stop_loss = c1_high
-                
-                if c2_high >= stop_loss:
+                entry_price, stop_loss = c1['Low'], c1['High']
+                if c2['High'] >= stop_loss or c3['High'] >= stop_loss:
                     exit_price = stop_loss
                 else:
-                    best_price = min(c3_low, c4_low)
-                    if best_price < entry_price:
-                        exit_price = best_price
-                    else:
-                        if c3_high >= stop_loss:
-                            exit_price = stop_loss
-                        else:
-                            exit_price = c4_open
-                pnl_points = entry_price - exit_price
+                    best_price = min(c3['Low'], c4['Low'])
+                    exit_price = best_price if best_price < entry_price else c4['Open']
             else:
-                daily_log.append({'תאריך': date_str, 'סטטוס': 'ללא עסקה', 'פירוט/סיבה': 'הנר הראשון היה אדום, אך הנר השני לא שבר את הנמוך שלו'})
+                reason = 'נר 1 אדום, אך נר 2 לא פרץ את השפל שלו — אין כניסה'
         else:
-            daily_log.append({'תאריך': date_str, 'סטטוס': 'ללא עסקה', 'פירוט/סיבה': "הנר הראשון היה דוג'י (שער פתיחה = שער סגירה). אין כיוון."})
+            reason = 'נר 1 ניטרלי (Close==Open) — אין ירוק ואין אדום'
 
-        # אם התבצעה עסקה, נוסיף ליומן ולרשימת התוצאות
         if trade_type:
-            pnl_money = pnl_points * point_value
-            
-            # הוספה ליומן המעקב
-            daily_log.append({
-                'תאריך': date_str, 
-                'סטטוס': 'בוצעה עסקה ✓', 
-                'פירוט/סיבה': f"{reason}. תוצאה: {'רווח' if pnl_money > 0 else 'הפסד'} של ${round(pnl_money, 2)}"
+            points = (exit_price - entry_price) if trade_type == 'Long' else (entry_price - exit_price)
+            pct_return = (points / entry_price) * 100
+            pnl = points * point_value
+
+            trades.append({
+                'תאריך': date.strftime('%Y-%m-%d'), 'סוג עסקה': trade_type,
+                'מחיר כניסה': round(entry_price, 2), 'סטופ לוס': round(stop_loss, 2),
+                'מחיר יציאה': round(exit_price, 2), 'נקודות (רווח/הפסד)': round(points, 2),
+                'אחוזים (%)': round(pct_return, 2), 'דולרים ($)': round(pnl, 2)
             })
-            
-            # הוספה לטבלת העסקאות הפעילות
-            trades_results.append({
-                'Date': date_str,
-                'Type': trade_type,
-                'Entry Price': round(entry_price, 2),
-                'Exit Price': round(exit_price, 2),
-                'Stop Loss': round(stop_loss, 2),
-                'PnL ($)': round(pnl_money, 2)
-            })
+            debug_log.append({'תאריך': date.strftime('%Y-%m-%d'), 'תוצאה': f'עסקת {trade_type}',
+                               'סיבה': f"נר1 {'ירוק' if is_green_c1 else 'אדום'}, פריצה אושרה בנר 2"})
+        else:
+            debug_log.append({'תאריך': date.strftime('%Y-%m-%d'), 'תוצאה': 'ללא עסקה', 'סיבה': reason})
 
-    return pd.DataFrame(trades_results), pd.DataFrame(daily_log)
+    return pd.DataFrame(trades), debug_log
 
-# --- ממשק משתמש (UI) ---
-st.title("🏦 Quantum Analytics | Backtest Engine")
-st.markdown("מערכת אלגוריתמית מתקדמת לניתוח מומנטום פתיחה בשוק האמריקאי (09:30 EST).")
 
-with st.sidebar:
-    st.header("⚙️ קונפיגורציית אלגוריתם")
-    
-    selected_assets = st.multiselect(
-        "בחר נכס לבדיקה:",
-        list(ASSETS.keys()),
-        default=["מיקרו נאסד''ק רציף (MNQ=F)"]
+def summarize(df_trades: pd.DataFrame) -> dict:
+    if df_trades.empty:
+        return {'עסקאות': 0, 'הצלחה %': 0, 'רווח כולל $': 0, 'רווח ממוצע $': 0, 'הפסד ממוצע $': 0}
+    wins = df_trades[df_trades['דולרים ($)'] > 0]
+    losses = df_trades[df_trades['דולרים ($)'] <= 0]
+    return {
+        'עסקאות': len(df_trades),
+        'הצלחה %': round(len(wins) / len(df_trades) * 100, 1),
+        'רווח כולל $': round(df_trades['דולרים ($)'].sum(), 2),
+        'רווח ממוצע $': round(wins['דולרים ($)'].mean(), 2) if len(wins) else 0,
+        'הפסד ממוצע $': round(losses['דולרים ($)'].mean(), 2) if len(losses) else 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ממשק המשתמש
+# ---------------------------------------------------------------------------
+st.markdown("""
+<div class="hero">
+    <div class="kicker">QUANT DESK · OPENING RANGE BREAKOUT</div>
+    <h1>💎 בוט בקטסט — פריצת נר פתיחה</h1>
+    <p>אסטרטגיה: לונג/שורט בפריצת נר ראשון (15 דק'). יציאה מקסימלית ברווח בנרות 3-4 או בפתיחת נר 4, בכפוף לסטופ.
+    ניתן לבדוק על מספר מכשירים במקביל ולהשוות ביניהם.</p>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="panel">', unsafe_allow_html=True)
+c1, c2 = st.columns([2, 1])
+with c1:
+    selected_instruments = st.multiselect(
+        "בחר מכשיר / מכשירים למבחן",
+        options=list(INSTRUMENTS.keys()),
+        default=["נאסדק 100 (Micro - MNQ)"]
     )
-    
-    selected_period = st.selectbox(
-        "בחר טווח זמן לאחור:",
-        options=["5d", "1mo", "60d"],
-        index=1,
-        help="שימו לב: API חינמי (Yahoo) תומך בנרות של 15 דקות עד 60 ימים לאחור בלבד."
-    )
-    
-    run_btn = st.button("הפעל מנוע חישוב 🚀")
+with c2:
+    lookback_label = st.selectbox("טווח זמן אחורה", options=list(LOOKBACK_OPTIONS.keys()), index=2)
+    days_back = LOOKBACK_OPTIONS[lookback_label]
 
-if run_btn:
-    if not selected_assets:
-        st.warning("אנא בחר לפחות נכס אחד לבדיקה.")
+st.caption("⚠️ נתוני 15 דקות זמינים ב-Yahoo Finance עד 60 יום אחורה בלבד.")
+run = st.button("🚀 הרץ בדיקת בקטסט", type="primary")
+st.markdown('</div>', unsafe_allow_html=True)
+
+if run:
+    if not selected_instruments:
+        st.warning("בחר לפחות מכשיר אחד להרצה.")
     else:
-        with st.spinner("מנתח נתוני עומק, מחשב הסתברויות ומכין דוחות..."):
-            
-            for asset_name in selected_assets:
-                ticker = ASSETS[asset_name]["ticker"]
-                pt_val = ASSETS[asset_name]["point_value"]
-                
-                df_trades, df_log = run_strategy(ticker, pt_val, selected_period)
-                
-                st.markdown(f"### דו''ח ביצועים: {asset_name}")
-                
-                if df_trades.empty:
-                    st.info("לא נמצאו עסקאות שעמדו בתנאים הקשיחים בטווח הזמן שנבחר.")
-                    if not df_log.empty:
-                        st.write("יומן מעקב לימים שנבדקו:")
-                        st.dataframe(df_log, use_container_width=True, hide_index=True)
-                else:
-                    total_pnl = df_trades['PnL ($)'].sum()
-                    win_pct = (len(df_trades[df_trades['PnL ($)'] > 0]) / len(df_trades)) * 100
-                    
-                    # קוביות נתונים יוקרתיות
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("סה''כ רווח/הפסד נקי ($)", f"${total_pnl:,.2f}")
-                    col2.metric("אחוזי הצלחה (Win Rate)", f"{win_pct:.1f}%")
-                    col3.metric("מספר עסקאות שהושלמו", len(df_trades))
-                    
-                    st.divider()
-                    
-                    # טאבים מודרניים
-                    tab1, tab2 = st.tabs(["📊 יומן עסקאות פעילות", "🔍 יומן שקיפות מלא (כל ימי המסחר)"])
-                    
-                    with tab1:
-                        # צביעת רווחים/הפסדים בטבלת העסקאות
-                        styled_trades = df_trades.style.map(
-                            lambda x: 'color: #00FF00; font-weight: bold;' if x > 0 else 'color: #FF4444; font-weight: bold;', 
-                            subset=['PnL ($)']
-                        )
-                        st.dataframe(styled_trades, use_container_width=True, hide_index=True)
-                        
-                        # גרף עקומת הון (Equity Curve) יוקרתי
-                        df_trades['Cumulative PnL'] = df_trades['PnL ($)'].cumsum()
-                        fig = px.area(df_trades, x='Date', y='Cumulative PnL', title="עקומת הון מצטברת (Equity Curve)")
-                        fig.update_traces(line_color='#D4AF37', fillcolor='rgba(212, 175, 55, 0.1)')
-                        fig.update_layout(
-                            plot_bgcolor="rgba(0,0,0,0)", 
-                            paper_bgcolor="rgba(0,0,0,0)", 
-                            font_color="#E2E8F0",
-                            xaxis_title="תאריך",
-                            yaxis_title="רווח מצטבר ($)"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+        results = {}
+        with st.spinner("מושך נתונים ומחשב עבור כל המכשירים שנבחרו..."):
+            for name in selected_instruments:
+                cfg = INSTRUMENTS[name]
+                df_trades, debug_log = run_backtest(cfg["ticker"], cfg["point_value"], days_back)
+                results[name] = {"trades": df_trades, "debug": debug_log, "cfg": cfg}
 
-                    with tab2:
-                        st.markdown("כאן ניתן לראות מעקב מדויק על **כל יום מסחר**, ולהבין מדוע האלגוריתם החליט שלא להיכנס לפוזיציה בימים מסוימים.")
-                        # עיצוב טבלת השקיפות
-                        def color_status(val):
-                            if 'בוצעה עסקה' in str(val): return 'color: #D4AF37; font-weight: bold;'
-                            if 'ללא עסקה' in str(val): return 'color: #888888;'
-                            return ''
-                        
-                        styled_log = df_log.style.map(color_status, subset=['סטטוס'])
-                        st.dataframe(styled_log, use_container_width=True, hide_index=True)
+        # ---------------- מצב השוואה (כמה מכשירים) ----------------
+        if len(selected_instruments) > 1:
+            st.markdown('<div class="section-title">⚖️ השוואת מכשירים</div>', unsafe_allow_html=True)
+            summary_rows = []
+            for name, res in results.items():
+                s = summarize(res["trades"])
+                s_row = {'מכשיר': name}
+                s_row.update(s)
+                summary_rows.append(s_row)
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+
+            st.markdown('<div class="section-title">📈 עקומות הון — השוואה</div>', unsafe_allow_html=True)
+            fig = go.Figure()
+            for name, res in results.items():
+                dft = res["trades"]
+                if dft.empty:
+                    continue
+                eq = dft['דולרים ($)'].cumsum()
+                fig.add_trace(go.Scatter(
+                    x=dft['תאריך'], y=eq, mode='lines+markers', name=name,
+                    line=dict(width=3, color=res["cfg"]["color"])
+                ))
+            fig.update_layout(
+                template='plotly_dark', height=440,
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                legend=dict(orientation="h", y=-0.15),
+                margin=dict(l=10, r=10, t=10, b=10)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown('<hr class="gold-divider">', unsafe_allow_html=True)
+
+        # ---------------- פירוט לכל מכשיר ----------------
+        for name, res in results.items():
+            df_trades, debug_log, cfg = res["trades"], res["debug"], res["cfg"]
+            st.markdown(f'<div class="section-title">🔎 פירוט — {name}</div>', unsafe_allow_html=True)
+
+            if df_trades.empty:
+                st.warning(f"לא היו עסקאות עבור {name} בטווח שנבדק.")
+                with st.expander("לוג אבחון יומי"):
+                    st.dataframe(pd.DataFrame(debug_log), use_container_width=True)
+                continue
+
+            s = summarize(df_trades)
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("כמות עסקאות", s['עסקאות'])
+            m2.metric("אחוזי הצלחה", f"{s['הצלחה %']}%")
+            m3.metric("רווח/הפסד כולל", f"${s['רווח כולל $']:,.2f}")
+            m4.metric("רווח ממוצע", f"${s['רווח ממוצע $']:,.2f}")
+            m5.metric("הפסד ממוצע", f"${s['הפסד ממוצע $']:,.2f}")
+
+            eq = df_trades['דולרים ($)'].cumsum()
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(
+                x=df_trades['תאריך'], y=eq, mode='lines+markers',
+                line=dict(color=cfg["color"], width=3),
+                marker=dict(size=6, color="#d4af37"),
+                fill='tozeroy', fillcolor='rgba(212,175,55,0.08)'
+            ))
+            fig_eq.update_layout(
+                template='plotly_dark', height=340,
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=10, b=10)
+            )
+            st.plotly_chart(fig_eq, use_container_width=True)
+
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                winning = len(df_trades[df_trades['דולרים ($)'] > 0])
+                fig_pie = go.Figure(data=[go.Pie(
+                    labels=['רווחיות', 'הפסדיות'],
+                    values=[winning, len(df_trades) - winning],
+                    marker=dict(colors=['#d4af37', '#3a3a42']),
+                    hole=0.6
+                )])
+                fig_pie.update_layout(template='plotly_dark', height=300, paper_bgcolor='rgba(0,0,0,0)',
+                                       margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig_pie, use_container_width=True)
+            with cc2:
+                counts = df_trades['סוג עסקה'].value_counts()
+                fig_bar = go.Figure(data=[go.Bar(x=counts.index, y=counts.values,
+                                                  marker_color=['#60a5fa', '#f472b6'])])
+                fig_bar.update_layout(template='plotly_dark', height=300, paper_bgcolor='rgba(0,0,0,0)',
+                                       plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            with st.expander("📋 יומן עסקאות מלא"):
+                st.dataframe(df_trades, use_container_width=True)
+            with st.expander("🔍 לוג אבחון יומי"):
+                st.dataframe(pd.DataFrame(debug_log), use_container_width=True)
+
+            st.markdown('<hr class="gold-divider">', unsafe_allow_html=True)
+else:
+    st.info("בחר מכשיר/ים, טווח זמן, ולחץ על הכפתור כדי להריץ את הבקטסט.")
