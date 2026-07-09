@@ -1,285 +1,252 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
+import streamlit as st
+import plotly.express as px
 
-# --- הגדרות הבוט ---
-TICKER = "MNQU26.CME"      # חוזה מיקרו נאסדק לספטמבר 2026
-POINT_VALUE = 2             # 2$ לנקודה בחוזה מיקרו
-DAYS_BACK = 30               # נבדוק לאחור 30 ימים
-INTERVAL = "15m"             # נרות 15 דקות
-TIMEZONE = "America/New_York"  # שעון ניו יורק
+# --- הגדרות תצוגת העמוד ועיצוב יוקרתי (CSS) ---
+st.set_page_config(page_title="Quantum Backtest Pro", layout="wide", initial_sidebar_state="expanded")
 
-st.set_page_config(page_title="בקטסט - פריצת נר פתיחה", layout="wide", page_icon="📈")
-
-# ---------------------------------------------------------------------------
-# עיצוב (CSS)
-# ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-    html, body, [class*="css"]  {
-        direction: rtl;
-        text-align: right;
-        font-family: 'Segoe UI', Tahoma, sans-serif;
+    /* עיצוב כהה ויוקרתי (Dark & Gold) */
+    .stApp {
+        background-color: #0E1117;
+        color: #C5C5C5;
     }
-    .main {
-        background: linear-gradient(180deg, #0e1117 0%, #10141c 100%);
+    h1, h2, h3 {
+        color: #D4AF37 !important; /* צבע זהב יוקרתי */
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
-    .hero {
-        background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
-        border: 1px solid #2d3646;
-        border-radius: 18px;
-        padding: 28px 32px;
-        margin-bottom: 24px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.35);
-    }
-    .hero h1 {
-        margin: 0;
-        font-size: 30px;
-        background: linear-gradient(90deg, #60a5fa, #34d399);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-    .hero p {
-        color: #9ca3af;
-        margin-top: 8px;
-        font-size: 15px;
-    }
-    div[data-testid="stMetric"] {
-        background: #161b26;
-        border: 1px solid #2d3646;
-        border-radius: 14px;
-        padding: 14px 18px;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.25);
-    }
-    div[data-testid="stMetricLabel"] { color: #9ca3af; }
     .stButton>button {
-        background: linear-gradient(90deg, #2563eb, #10b981);
-        color: white;
+        background-color: #D4AF37;
+        color: #0E1117;
+        font-weight: bold;
+        border-radius: 5px;
         border: none;
-        border-radius: 10px;
-        padding: 10px 26px;
-        font-weight: 600;
-        font-size: 15px;
+        transition: all 0.3s ease;
+        width: 100%;
     }
     .stButton>button:hover {
-        opacity: 0.9;
-        color: white;
+        background-color: #F3E5AB;
+        color: #000000;
+        box-shadow: 0px 0px 15px rgba(212, 175, 55, 0.5);
     }
-    .stDataFrame { border-radius: 12px; overflow: hidden; }
-    .section-title {
-        font-size: 20px;
-        font-weight: 700;
-        margin: 22px 0 10px 0;
-        color: #e5e7eb;
-        border-right: 4px solid #34d399;
-        padding-right: 10px;
+    div[data-testid="metric-container"] {
+        background-color: #1A1C24;
+        border: 1px solid #333;
+        border-right: 4px solid #D4AF37;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #333;
+        border-radius: 8px;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# --- מאגר נכסים ושווי נקודה ---
+ASSETS = {
+    "נאסד''ק (NQ=F)": {"ticker": "NQ=F", "point_value": 20},
+    "מיקרו נאסד''ק (MNQ=F)": {"ticker": "MNQ=F", "point_value": 2},
+    "S&P 500 (ES=F)": {"ticker": "ES=F", "point_value": 50},
+    "מיקרו S&P (MES=F)": {"ticker": "MES=F", "point_value": 5},
+    "זהב (GC=F)": {"ticker": "GC=F", "point_value": 100},
+    "נפט גולמי (CL=F)": {"ticker": "CL=F", "point_value": 1000}
+}
 
-def get_data_and_calculate():
-    """מושך נתונים ומריץ את אסטרטגיית פריצת נר הפתיחה.
-    מחזיר: (df_trades, debug_log) — הלוג מסביר מה קרה בכל יום, כולל ימים ללא עסקה."""
+# --- מנוע הבקטסט ---
+def run_strategy(ticker, point_value, period):
+    asset = yf.Ticker(ticker)
+    data = asset.history(period=period, interval="15m")
+        
+    if data.empty:
+        return pd.DataFrame()
 
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=DAYS_BACK)
-
-    ticker_obj = yf.Ticker(TICKER)
-    df = ticker_obj.history(start=start_date, end=end_date, interval=INTERVAL)
-
-    if df.empty:
-        st.error("לא נמצאו נתונים. נסה לשנות את הסימול ל-'MNQ=F' עבור החוזה הרציף.")
-        return pd.DataFrame(), []
-
-    if df.index.tz is None:
-        df.index = df.index.tz_localize('UTC').tz_convert(TIMEZONE)
+    if data.index.tz is None:
+        data.index = data.index.tz_localize('UTC').tz_convert('America/New_York')
     else:
-        df.index = df.index.tz_convert(TIMEZONE)
+        data.index = data.index.tz_convert('America/New_York')
 
-    trades = []
-    debug_log = []
-
-    df['Date'] = df.index.date
-    grouped = df.groupby('Date')
-
-    for date, day_data in grouped:
-        market_hours = day_data.between_time('09:30', '16:00')
-
-        if len(market_hours) < 4:
-            debug_log.append({
-                'תאריך': date.strftime('%Y-%m-%d'),
-                'תוצאה': 'דולג',
-                'סיבה': f'רק {len(market_hours)} נרות זמינים ביום זה (נדרשים 4+)'
-            })
+    results = []
+    grouped = data.groupby(data.index.date)
+    
+    for date, df_day in grouped:
+        # כל הנכסים נבדקים על בסיס שעת פתיחת וול סטריט (09:30 EST)
+        df_day = df_day.between_time('09:30', '16:00')
+        
+        if len(df_day) < 4:
             continue
-
-        c1 = market_hours.iloc[0]
-        c2 = market_hours.iloc[1]
-        c3 = market_hours.iloc[2]
-        c4 = market_hours.iloc[3]
-
+            
+        c1 = df_day.iloc[0] # 09:30
+        c2 = df_day.iloc[1] # 09:45
+        c3 = df_day.iloc[2] # 10:00
+        c4 = df_day.iloc[3] # 10:15
+        
+        c1_open, c1_close, c1_high, c1_low = c1['Open'], c1['Close'], c1['High'], c1['Low']
+        c2_high, c2_low = c2['High'], c2['Low']
+        c3_high, c3_low = c3['High'], c3['Low']
+        c4_open, c4_high, c4_low = c4['Open'], c4['High'], c4['Low']
+        
         trade_type = None
-        entry_price = stop_loss = exit_price = 0
-        reason = ""
-
-        is_green_c1 = c1['Close'] > c1['Open']
-        is_red_c1 = c1['Close'] < c1['Open']
-
-        # -- לונג --
-        if is_green_c1:
-            if c2['High'] > c1['High']:
+        entry_price, exit_price, stop_loss, pnl_points = 0.0, 0.0, 0.0, 0.0
+        
+        # --- אסטרטגיית לונג ---
+        if c1_close > c1_open:
+            if c2_high > c1_high:
                 trade_type = 'Long'
-                entry_price = c1['High']
-                stop_loss = c1['Low']
-                if c2['Low'] <= stop_loss or c3['Low'] <= stop_loss:
+                entry_price = c1_high
+                stop_loss = c1_low
+                
+                if c2_low <= stop_loss:
                     exit_price = stop_loss
                 else:
-                    best_price = max(c3['High'], c4['High'])
-                    exit_price = best_price if best_price > entry_price else c4['Open']
-            else:
-                reason = 'נר 1 ירוק, אך נר 2 לא פרץ את השיא שלו — אין כניסה'
+                    best_price = max(c3_high, c4_high)
+                    if best_price > entry_price:
+                        exit_price = best_price
+                    else:
+                        if c3_low <= stop_loss:
+                            exit_price = stop_loss
+                        else:
+                            exit_price = c4_open
+                
+                pnl_points = exit_price - entry_price
 
-        # -- שורט --
-        elif is_red_c1:
-            if c2['Low'] < c1['Low']:
+        # --- אסטרטגיית שורט ---
+        elif c1_close < c1_open:
+            if c2_low < c1_low:
                 trade_type = 'Short'
-                entry_price = c1['Low']
-                stop_loss = c1['High']
-                if c2['High'] >= stop_loss or c3['High'] >= stop_loss:
+                entry_price = c1_low
+                stop_loss = c1_high
+                
+                if c2_high >= stop_loss:
                     exit_price = stop_loss
                 else:
-                    best_price = min(c3['Low'], c4['Low'])
-                    exit_price = best_price if best_price < entry_price else c4['Open']
-            else:
-                reason = 'נר 1 אדום, אך נר 2 לא פרץ את השפל שלו — אין כניסה'
-
-        else:
-            reason = 'נר 1 ניטרלי (דוג׳י, Close==Open) — אין ירוק ואין אדום, האסטרטגיה לא מוגדרת ליום כזה'
+                    best_price = min(c3_low, c4_low)
+                    if best_price < entry_price:
+                        exit_price = best_price
+                    else:
+                        if c3_high >= stop_loss:
+                            exit_price = stop_loss
+                        else:
+                            exit_price = c4_open
+                            
+                pnl_points = entry_price - exit_price
 
         if trade_type:
-            if trade_type == 'Long':
-                points = exit_price - entry_price
-            else:
-                points = entry_price - exit_price
-            pct_return = (points / entry_price) * 100
-            pnl = points * POINT_VALUE
-
-            trades.append({
-                'תאריך': date.strftime('%Y-%m-%d'),
-                'סוג עסקה': trade_type,
-                'מחיר כניסה': round(entry_price, 2),
-                'סטופ לוס': round(stop_loss, 2),
-                'מחיר יציאה': round(exit_price, 2),
-                'נקודות (רווח/הפסד)': round(points, 2),
-                'אחוזים (%)': round(pct_return, 2),
-                'דולרים ($)': round(pnl, 2)
-            })
-            debug_log.append({
-                'תאריך': date.strftime('%Y-%m-%d'),
-                'תוצאה': f'עסקת {trade_type}',
-                'סיבה': f"נר1 {'ירוק' if is_green_c1 else 'אדום'}, פריצה אושרה בנר 2"
-            })
-        else:
-            debug_log.append({
-                'תאריך': date.strftime('%Y-%m-%d'),
-                'תוצאה': 'ללא עסקה',
-                'סיבה': reason
+            pnl_money = pnl_points * point_value
+            pnl_pct = (pnl_points / entry_price) * 100
+            
+            results.append({
+                'Date': date.strftime('%Y-%m-%d'),
+                'Type': trade_type,
+                'Entry Price': round(entry_price, 2),
+                'Exit Price': round(exit_price, 2),
+                'Stop Loss': round(stop_loss, 2),
+                'PnL Points': round(pnl_points, 2),
+                'PnL %': round(pnl_pct, 3),
+                'PnL ($)': round(pnl_money, 2)
             })
 
-    return pd.DataFrame(trades), debug_log
+    return pd.DataFrame(results)
 
+# --- ממשק משתמש (UI) ---
+st.title("🏛️ מערכת בקטסט מוסדית - פריצת טווח פתיחה")
+st.markdown("בדוק והשווה ביצועי מומנטום פתיחה (09:30 EST) על חוזים עתידיים שונים.")
 
-# ---------------------------------------------------------------------------
-# ממשק המשתמש
-# ---------------------------------------------------------------------------
-st.markdown("""
-<div class="hero">
-    <h1>🤖 בוט בקטסט — פריצת נר פתיחה בנאסדק</h1>
-    <p>אסטרטגיה: לונג/שורט בפריצת נר ראשון (15 דק'). יציאה מקסימלית ברווח בנרות 3-4 או בפתיחת נר 4, בכפוף לסטופ.</p>
-</div>
-""", unsafe_allow_html=True)
+# סרגל צד להגדרות
+with st.sidebar:
+    st.header("⚙️ הגדרות סימולציה")
+    
+    selected_assets = st.multiselect(
+        "בחר נכסים לבדיקה והשוואה:",
+        list(ASSETS.keys()),
+        default=["נאסד''ק (NQ=F)", "S&P 500 (ES=F)", "זהב (GC=F)"]
+    )
+    
+    selected_period = st.selectbox(
+        "בחר טווח זמן לאחור:",
+        options=["5d", "1mo", "60d"],
+        index=1,
+        help="Yahoo Finance מגבילים שליפת נרות של 15 דקות לעד 60 יום לאחור בחינם."
+    )
+    
+    run_btn = st.button("🚀 הפעל סימולציה")
 
-run = st.button("🚀 הרץ בדיקת בקטסט עכשיו", type="primary")
-
-if run:
-    with st.spinner("מושך נתונים ומחשב..."):
-        df_trades, debug_log = get_data_and_calculate()
-
-    if not df_trades.empty:
-        total_trades = len(df_trades)
-        winning_trades = len(df_trades[df_trades['דולרים ($)'] > 0])
-        win_rate = (winning_trades / total_trades) * 100
-        total_profit = df_trades['דולרים ($)'].sum()
-        avg_win = df_trades[df_trades['דולרים ($)'] > 0]['דולרים ($)'].mean() if winning_trades else 0
-        avg_loss = df_trades[df_trades['דולרים ($)'] <= 0]['דולרים ($)'].mean() if (total_trades - winning_trades) else 0
-
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("כמות עסקאות", total_trades)
-        col2.metric("אחוזי הצלחה", f"{win_rate:.1f}%")
-        col3.metric("רווח/הפסד כולל", f"${total_profit:,.2f}")
-        col4.metric("רווח ממוצע", f"${avg_win:,.2f}" if winning_trades else "—")
-        col5.metric("הפסד ממוצע", f"${avg_loss:,.2f}" if (total_trades - winning_trades) else "—")
-
-        st.markdown('<div class="section-title">📈 עקומת הון (Equity Curve)</div>', unsafe_allow_html=True)
-        eq = df_trades['דולרים ($)'].cumsum()
-        fig_eq = go.Figure()
-        fig_eq.add_trace(go.Scatter(
-            x=df_trades['תאריך'], y=eq, mode='lines+markers',
-            line=dict(color='#34d399', width=3),
-            marker=dict(size=6, color='#60a5fa'),
-            fill='tozeroy', fillcolor='rgba(52,211,153,0.08)'
-        ))
-        fig_eq.update_layout(
-            template='plotly_dark', height=380,
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, t=10, b=10)
-        )
-        st.plotly_chart(fig_eq, use_container_width=True)
-
-        c_a, c_b = st.columns([1, 1])
-        with c_a:
-            st.markdown('<div class="section-title">🥧 יחס הצלחה/כישלון</div>', unsafe_allow_html=True)
-            fig_pie = go.Figure(data=[go.Pie(
-                labels=['רווחיות', 'הפסדיות'],
-                values=[winning_trades, total_trades - winning_trades],
-                marker=dict(colors=['#34d399', '#f87171']),
-                hole=0.55
-            )])
-            fig_pie.update_layout(
-                template='plotly_dark', height=320,
-                paper_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=10, r=10, t=10, b=10)
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        with c_b:
-            st.markdown('<div class="section-title">📊 לונג מול שורט</div>', unsafe_allow_html=True)
-            counts = df_trades['סוג עסקה'].value_counts()
-            fig_bar = go.Figure(data=[go.Bar(
-                x=counts.index, y=counts.values,
-                marker_color=['#60a5fa', '#f472b6']
-            )])
-            fig_bar.update_layout(
-                template='plotly_dark', height=320,
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=10, r=10, t=10, b=10)
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        st.markdown('<div class="section-title">📋 יומן עסקאות מלא</div>', unsafe_allow_html=True)
-        st.dataframe(df_trades, use_container_width=True)
-
-        st.markdown('<div class="section-title">🔍 לוג אבחון יומי (עונה על: "למה לא נכנס?")</div>', unsafe_allow_html=True)
-        st.caption("כאן רואים לכל יום — כולל ימים ללא עסקה — מה בדיוק הבוט ראה ולמה החליט להיכנס או לא.")
-        st.dataframe(pd.DataFrame(debug_log), use_container_width=True)
-
+# --- הפעלת הבדיקה והצגת התוצאות ---
+if run_btn:
+    if not selected_assets:
+        st.warning("אנא בחר לפחות נכס אחד לבדיקה.")
     else:
-        st.warning("לא היו עסקאות בטווח שנבדק התואמות לתנאים.")
-        if debug_log:
-            st.markdown('<div class="section-title">🔍 לוג אבחון יומי</div>', unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(debug_log), use_container_width=True)
-else:
-    st.info("לחץ על הכפתור כדי להריץ את הבקטסט.")
+        with st.spinner("מנתח נתוני שוק ומריץ אלגוריתם..."):
+            all_results = {}
+            summary_data = []
+            
+            for asset_name in selected_assets:
+                ticker = ASSETS[asset_name]["ticker"]
+                pt_val = ASSETS[asset_name]["point_value"]
+                
+                df = run_strategy(ticker, pt_val, selected_period)
+                all_results[asset_name] = df
+                
+                if not df.empty:
+                    total_profit = df['PnL ($)'].sum()
+                    win_rate = (len(df[df['PnL ($)'] > 0]) / len(df)) * 100 if len(df) > 0 else 0
+                    summary_data.append({
+                        "נכס": asset_name,
+                        "רווח כולל ($)": total_profit,
+                        "אחוז הצלחה (%)": win_rate,
+                        "מספר עסקאות": len(df)
+                    })
+
+            # --- הצגת הנתונים ---
+            if summary_data:
+                st.success("הסימולציה הושלמה בהצלחה!")
+                summary_df = pd.DataFrame(summary_data)
+                
+                # יצירת טאבים להפרדה ויזואלית
+                tabs = st.tabs(["📊 השוואת נכסים"] + selected_assets)
+                
+                # טאב השוואה מרכזי
+                with tabs[0]:
+                    st.subheader("סיכום ביצועים כולל")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # גרף עמודות יוקרתי של רווחים
+                        fig = px.bar(summary_df, x="נכס", y="רווח כולל ($)", color="נכס", 
+                                     title="השוואת רווחים (PnL) בדולרים", text_auto='.2s')
+                        fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#D4AF37")
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        st.dataframe(summary_df.style.format({"רווח כולל ($)": "${:,.2f}", "אחוז הצלחה (%)": "{:.1f}%"}), 
+                                     use_container_width=True, hide_index=True)
+
+                # טאבים אישיים לכל נכס
+                for i, asset_name in enumerate(selected_assets):
+                    with tabs[i+1]:
+                        df_asset = all_results[asset_name]
+                        if df_asset.empty:
+                            st.info(f"לא נמצאו עסקאות שעמדו בתנאים עבור {asset_name}.")
+                        else:
+                            # כרטיסיות נתונים לנכס (Metrics)
+                            metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+                            total_pnl = df_asset['PnL ($)'].sum()
+                            win_pct = (len(df_asset[df_asset['PnL ($)'] > 0]) / len(df_asset)) * 100
+                            
+                            metrics_col1.metric("רווח נקי ($)", f"${total_pnl:,.2f}")
+                            metrics_col2.metric("אחוזי פגיעה", f"{win_pct:.1f}%")
+                            metrics_col3.metric("סה''כ עסקאות", len(df_asset))
+                            
+                            st.divider()
+                            st.write("יומן עסקאות מלא:")
+                            # עיצוב הטבלה להבלטת רווחים והפסדים
+                            st.dataframe(
+                                df_asset.style.map(lambda x: 'color: #00FF00' if x > 0 else 'color: #FF0000', subset=['PnL ($)', 'PnL %']),
+                                use_container_width=True, 
+                                hide_index=True
+                            )
+            else:
+                st.error("לא נמצאו נתונים לאף אחד מהנכסים שנבחרו. נסה לשנות את טווח הזמן.")
